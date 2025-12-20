@@ -1,12 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Upload, Download, Square, Type, MousePointer2, Trash2, Pipette, Plus, Minus, BringToFront, Undo2, Redo2 } from 'lucide-react';
+import { Upload, Download, Square, Type, MousePointer2, Trash2, Pipette, Plus, Minus, BringToFront, Undo2, Redo2, ScanLine } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import pptxgen from 'pptxgenjs';
+import { createWorker } from 'tesseract.js';
 
 // Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-type Tool = 'select' | 'mask' | 'text' | 'eyedropper';
+type Tool = 'select' | 'mask' | 'text' | 'eyedropper' | 'scan';
 
 interface CanvasObject {
   id: string;
@@ -41,6 +42,7 @@ function App() {
   const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [currentColor, setCurrentColor] = useState('#FFFFFF');
+  const [isScanning, setIsScanning] = useState(false);
 
   // History management
   const [history, setHistory] = useState<HistoryState[]>([]);
@@ -279,6 +281,15 @@ function App() {
         ctx.globalAlpha = 1.0;
         ctx.strokeStyle = '#3b82f6';
         ctx.strokeRect(obj.x, obj.y, obj.width, obj.height);
+      } else if (obj.type === 'text') { // This is for 'scan' tool ROI preview
+        ctx.fillStyle = '#3b82f6';
+        ctx.globalAlpha = 0.2;
+        ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
+        ctx.globalAlpha = 1.0;
+        ctx.strokeStyle = '#3b82f6';
+        ctx.setLineDash([10, 5]);
+        ctx.strokeRect(obj.x, obj.y, obj.width, obj.height);
+        ctx.setLineDash([]);
       }
     }
   }, [currentSlide, selectedObjectId, editingTextId, slides]);
@@ -398,9 +409,55 @@ function App() {
     }
   };
 
+  const performOCR = async (roi: CanvasObject) => {
+    if (!currentSlide || roi.width < 10 || roi.height < 10) return;
+    setIsScanning(true);
+    try {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = roi.width;
+      tempCanvas.height = roi.height;
+      const tctx = tempCanvas.getContext('2d');
+      if (!tctx) return;
+
+      // Draw original slide ROI to temp canvas
+      tctx.drawImage(currentSlide.canvas, roi.x, roi.y, roi.width, roi.height, 0, 0, roi.width, roi.height);
+
+      const worker = await createWorker('jpn+eng');
+      const { data: { text } } = await worker.recognize(tempCanvas);
+      await worker.terminate();
+
+      if (text.trim()) {
+        const id = crypto.randomUUID();
+        const newObj: CanvasObject = {
+          id,
+          type: 'text',
+          x: roi.x,
+          y: roi.y,
+          width: roi.width,
+          height: roi.height,
+          content: text.trim(),
+          color: currentColor === '#FFFFFF' ? '#000000' : currentColor,
+          fontSize: (roi.height / text.split('\n').length) * 0.8 || 60,
+        };
+        const updatedSlides = [...slides];
+        updatedSlides[currentSlideIndex].objects.push(newObj);
+        setSlides(updatedSlides);
+        setSelectedObjectId(id);
+        saveToHistory(updatedSlides, currentSlideIndex);
+      }
+    } catch (err) {
+      console.error('OCR Error:', err);
+      alert('OCR failed. Please try again.');
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
   const handleMouseUp = () => {
     if (isDrawing.current && currentObjectRef.current) {
-      if (currentObjectRef.current.width > 5 && currentObjectRef.current.height > 5) {
+      if (activeTool === 'scan') {
+        performOCR(currentObjectRef.current);
+      } else if (currentObjectRef.current.width > 5 && currentObjectRef.current.height > 5) {
         const updatedSlides = [...slides];
         updatedSlides[currentSlideIndex].objects.push(currentObjectRef.current);
         setSlides(updatedSlides);
@@ -619,6 +676,20 @@ function App() {
           >
             <Pipette size={24} />
           </button>
+          <button
+            onClick={() => setActiveTool('scan')}
+            className={`p-2.5 rounded-xl transition-all ${activeTool === 'scan' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-neutral-500 hover:bg-neutral-800 hover:text-white'}`}
+            title="Smart OCR Scan (R)"
+          >
+            <ScanLine size={24} />
+          </button>
+
+          {isScanning && (
+            <div className="flex flex-col items-center gap-1">
+              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+              <span className="text-[10px] font-bold text-blue-400">Scanning</span>
+            </div>
+          )}
 
           <div className="mt-auto flex flex-col items-center gap-4 py-2">
             {selectedObject && selectedObject.type === 'text' && (
