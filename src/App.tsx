@@ -8,6 +8,7 @@ import { createWorker } from 'tesseract.js';
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 type Tool = 'select' | 'mask' | 'text' | 'eyedropper' | 'scan';
+type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | null;
 
 interface CanvasObject {
   id: string;
@@ -42,6 +43,9 @@ function App() {
   const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [currentColor, setCurrentColor] = useState('#FFFFFF');
+  const [activeHandle, setActiveHandle] = useState<Handle>(null);
+  const [maskColor, setMaskColor] = useState('#FFFFFF');
+  const [textColor, setTextColor] = useState('#000000');
   const [isScanning, setIsScanning] = useState(false);
 
   // History management
@@ -127,7 +131,7 @@ function App() {
 
         canvas.height = viewport.height;
         canvas.width = viewport.width;
-        await page.render({ canvasContext: context, viewport }).promise;
+        await page.render({ canvasContext: context, viewport, canvas } as any).promise;
 
         const thumbScale = 0.2;
         const thumbViewport = page.getViewport({ scale: thumbScale });
@@ -136,7 +140,7 @@ function App() {
         if (thumbContext) {
           thumbCanvas.height = thumbViewport.height;
           thumbCanvas.width = thumbViewport.width;
-          await page.render({ canvasContext: thumbContext, viewport: thumbViewport }).promise;
+          await page.render({ canvasContext: thumbContext, viewport: thumbViewport, canvas: thumbCanvas } as any).promise;
         }
 
         loadedSlides.push({
@@ -212,6 +216,7 @@ function App() {
               w, h: Math.max(h, fontSizePt * 0.02),
               fontSize: Math.round(fontSizePt),
               color: obj.color.replace('#', ''),
+              fontFace: 'MS PGothic',
               bold: true,
               valign: 'top',
               align: 'left',
@@ -236,6 +241,19 @@ function App() {
   const selectedObject = currentSlide?.objects.find(obj => obj.id === selectedObjectId);
   const editingObject = currentSlide?.objects.find(obj => obj.id === editingTextId);
 
+  const getHandles = (obj: CanvasObject) => {
+    return {
+      nw: { x: obj.x, y: obj.y },
+      n: { x: obj.x + obj.width / 2, y: obj.y },
+      ne: { x: obj.x + obj.width, y: obj.y },
+      e: { x: obj.x + obj.width, y: obj.y + obj.height / 2 },
+      se: { x: obj.x + obj.width, y: obj.y + obj.height },
+      s: { x: obj.x + obj.width / 2, y: obj.y + obj.height },
+      sw: { x: obj.x, y: obj.y + obj.height },
+      w: { x: obj.x, y: obj.y + obj.height / 2 },
+    };
+  };
+
   // Render Canvas
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -256,7 +274,7 @@ function App() {
 
         ctx.fillStyle = obj.color;
         const fontSize = obj.fontSize || 60;
-        ctx.font = `bold ${fontSize}px sans-serif`;
+        ctx.font = `bold ${fontSize}px "MS PGothic", "MS Pゴシック", sans-serif`;
         ctx.textBaseline = 'top';
 
         const lines = (obj.content || '').split('\n');
@@ -269,6 +287,19 @@ function App() {
         ctx.strokeStyle = '#3b82f6';
         ctx.lineWidth = 4;
         ctx.strokeRect(obj.x - 2, obj.y - 2, obj.width + 4, obj.height + 4);
+
+        // Draw handles
+        const handleSize = 12;
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 2;
+
+        const handles = getHandles(obj);
+        (Object.keys(handles) as (keyof typeof handles)[]).forEach((key) => {
+          const h = handles[key];
+          ctx.fillRect(h.x - handleSize / 2, h.y - handleSize / 2, handleSize, handleSize);
+          ctx.strokeRect(h.x - handleSize / 2, h.y - handleSize / 2, handleSize, handleSize);
+        });
       }
     });
 
@@ -281,18 +312,19 @@ function App() {
         ctx.globalAlpha = 1.0;
         ctx.strokeStyle = '#3b82f6';
         ctx.strokeRect(obj.x, obj.y, obj.width, obj.height);
-      } else if (obj.type === 'text') { // This is for 'scan' tool ROI preview
+      } else if (obj.type === 'text' && activeTool === 'scan') { // Scan ROI preview
         ctx.fillStyle = '#3b82f6';
         ctx.globalAlpha = 0.2;
         ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
         ctx.globalAlpha = 1.0;
         ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 2;
         ctx.setLineDash([10, 5]);
         ctx.strokeRect(obj.x, obj.y, obj.width, obj.height);
         ctx.setLineDash([]);
       }
     }
-  }, [currentSlide, selectedObjectId, editingTextId, slides]);
+  }, [currentSlide, selectedObjectId, editingTextId, slides, activeTool]);
 
   const getMousePos = (e: React.MouseEvent | MouseEvent) => {
     const canvas = canvasRef.current;
@@ -307,7 +339,7 @@ function App() {
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (!currentSlide || editingTextId) return;
+    if (!currentSlide) return;
     const pos = getMousePos(e);
 
     if (activeTool === 'eyedropper') {
@@ -318,7 +350,14 @@ function App() {
           const pixel = ctx.getImageData(pos.x, pos.y, 1, 1).data;
           const hex = `#${((1 << 24) + (pixel[0] << 16) + (pixel[1] << 8) + pixel[2]).toString(16).slice(1).toUpperCase()}`;
           setCurrentColor(hex);
+
+          // Update the tool's memory based on what we're about to use
+          // (Usually eyesropper is used to pick a background for a mask)
+          setMaskColor(hex);
+
           if (selectedObjectId) {
+            const obj = currentSlide.objects.find(o => o.id === selectedObjectId);
+            if (obj && obj.type === 'text') setTextColor(hex);
             updateSelectedObject({ color: hex });
           }
           setActiveTool('select');
@@ -328,6 +367,24 @@ function App() {
     }
 
     if (activeTool === 'select') {
+      // Check handles first
+      if (selectedObjectId) {
+        const obj = currentSlide.objects.find(o => o.id === selectedObjectId);
+        if (obj) {
+          const handles = getHandles(obj);
+          const handleSize = 20; // Slightly larger hit area for easier interaction
+          const hit = (Object.keys(handles) as (keyof typeof handles)[]).find(key => {
+            const h = handles[key];
+            return pos.x >= h.x - handleSize / 2 && pos.x <= h.x + handleSize / 2 &&
+              pos.y >= h.y - handleSize / 2 && pos.y <= h.y + handleSize / 2;
+          });
+          if (hit) {
+            setActiveHandle(hit);
+            return;
+          }
+        }
+      }
+
       const hitIndex = [...currentSlide.objects].reverse().findIndex(obj =>
         pos.x >= obj.x && pos.x <= obj.x + obj.width &&
         pos.y >= obj.y && pos.y <= obj.y + obj.height
@@ -335,9 +392,15 @@ function App() {
 
       if (hitIndex !== -1) {
         const realIndex = currentSlide.objects.length - 1 - hitIndex;
-        const obj = currentSlide.objects[realIndex];
+        const updatedSlides = [...slides];
+        const objects = updatedSlides[currentSlideIndex].objects;
+        const [obj] = objects.splice(realIndex, 1);
+        objects.push(obj);
+
         setSelectedObjectId(obj.id);
         setCurrentColor(obj.color);
+        setSlides(updatedSlides);
+
         isDragging.current = true;
         dragOffset.current = {
           x: pos.x - obj.x,
@@ -379,12 +442,75 @@ function App() {
       setCurrentColor(newObj.color);
       setActiveTool('select');
       saveToHistory(updatedSlides, currentSlideIndex);
+    } else if (activeTool === 'scan') {
+      isDrawing.current = true;
+      startPos.current = pos;
+      currentObjectRef.current = {
+        id: 'scan-roi',
+        type: 'text',
+        x: pos.x,
+        y: pos.y,
+        width: 0,
+        height: 0,
+        color: '#FFFFFF',
+        content: ''
+      };
     }
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (editingTextId) return;
     const pos = getMousePos(e);
+
+    if (activeHandle && selectedObjectId) {
+      const updatedSlides = [...slides];
+      const obj = updatedSlides[currentSlideIndex].objects.find(o => o.id === selectedObjectId);
+      if (obj) {
+        const oldX = obj.x;
+        const oldY = obj.y;
+        const oldW = obj.width;
+        const oldH = obj.height;
+
+        if (activeHandle.includes('e')) obj.width = Math.max(10, pos.x - obj.x);
+        if (activeHandle.includes('s')) obj.height = Math.max(10, pos.y - obj.y);
+        if (activeHandle.includes('w')) {
+          const newX = Math.min(pos.x, oldX + oldW - 10);
+          obj.width = oldX + oldW - newX;
+          obj.x = newX;
+        }
+        if (activeHandle.includes('n')) {
+          const newY = Math.min(pos.y, oldY + oldH - 10);
+          obj.height = oldY + oldH - newY;
+          obj.y = newY;
+        }
+        setSlides(updatedSlides);
+      }
+      return;
+    }
+
+    // Set cursor for handles
+    const canvas = canvasRef.current;
+    if (canvas && activeTool === 'select' && selectedObjectId) {
+      const obj = currentSlide.objects.find(o => o.id === selectedObjectId);
+      if (obj) {
+        const handles = getHandles(obj);
+        const handleSize = 25;
+        const hit = (Object.keys(handles) as (keyof typeof handles)[]).find(key => {
+          const h = handles[key];
+          return pos.x >= h.x - handleSize / 2 && pos.x <= h.x + handleSize / 2 &&
+            pos.y >= h.y - handleSize / 2 && pos.y <= h.y + handleSize / 2;
+        });
+        if (hit) {
+          if (hit === 'nw' || hit === 'se') canvas.style.cursor = 'nwse-resize';
+          else if (hit === 'ne' || hit === 'sw') canvas.style.cursor = 'nesw-resize';
+          else if (hit === 'n' || hit === 's') canvas.style.cursor = 'ns-resize';
+          else if (hit === 'e' || hit === 'w') canvas.style.cursor = 'ew-resize';
+        } else {
+          canvas.style.cursor = 'default';
+        }
+      }
+    } else if (canvas) {
+      canvas.style.cursor = 'default';
+    }
 
     if (isDragging.current && selectedObjectId) {
       const updatedSlides = [...slides];
@@ -409,6 +535,51 @@ function App() {
     }
   };
 
+  const detectTextColor = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    const data = ctx.getImageData(0, 0, width, height).data;
+    const colorCounts: Record<string, number> = {};
+    const backgroundColors = new Set<string>();
+
+    // Sample edges to define background color range
+    for (let x = 0; x < width; x++) {
+      [0, height - 1].forEach(y => {
+        const i = (y * width + x) * 4;
+        backgroundColors.add(`${Math.floor(data[i] / 16)},${Math.floor(data[i + 1] / 16)},${Math.floor(data[i + 2] / 16)}`);
+      });
+    }
+    for (let y = 0; y < height; y++) {
+      [0, width - 1].forEach(x => {
+        const i = (y * width + x) * 4;
+        backgroundColors.add(`${Math.floor(data[i] / 16)},${Math.floor(data[i + 1] / 16)},${Math.floor(data[i + 2] / 16)}`);
+      });
+    }
+
+    // Build histogram of non-background colors
+    let maxCount = 0;
+    let dominantColor = { r: 0, g: 0, b: 0 };
+
+    for (let i = 0; i < data.length; i += 16) { // Sample step
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const key = `${Math.floor(r / 16)},${Math.floor(g / 16)},${Math.floor(b / 16)}`;
+
+      if (!backgroundColors.has(key)) {
+        colorCounts[key] = (colorCounts[key] || 0) + 1;
+        if (colorCounts[key] > maxCount) {
+          maxCount = colorCounts[key];
+          dominantColor = { r, g, b };
+        }
+      }
+    }
+
+    // Fallback if no non-background color found (e.g. all ROI is text or background)
+    if (maxCount === 0) {
+      return '#000000';
+    }
+
+    const toHex = (c: number) => c.toString(16).padStart(2, '0').toUpperCase();
+    return `#${toHex(dominantColor.r)}${toHex(dominantColor.g)}${toHex(dominantColor.b)}`;
+  };
+
   const performOCR = async (roi: CanvasObject) => {
     if (!currentSlide || roi.width < 10 || roi.height < 10) return;
     setIsScanning(true);
@@ -419,15 +590,32 @@ function App() {
       const tctx = tempCanvas.getContext('2d');
       if (!tctx) return;
 
-      // Draw original slide ROI to temp canvas
       tctx.drawImage(currentSlide.canvas, roi.x, roi.y, roi.width, roi.height, 0, 0, roi.width, roi.height);
 
       const worker = await createWorker('jpn+eng');
-      const { data: { text } } = await worker.recognize(tempCanvas);
+      const { data } = await worker.recognize(tempCanvas);
       await worker.terminate();
 
+      const text = data.text;
       if (text.trim()) {
+        const cleanedText = text.trim()
+          .replace(/([\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF])\s+(?=[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF])/g, '$1')
+          .replace(/([\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF])\s+(?=[a-zA-Z0-9])/g, '$1')
+          .replace(/([a-zA-Z0-9])\s+(?=[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF])/g, '$1');
+
+        const detectedColor = detectTextColor(tctx, roi.width, roi.height);
+
+        let avgLineHeight = 60;
+        const pageData = data as any;
+        if (pageData.lines && pageData.lines.length > 0) {
+          const sumHeight = pageData.lines.reduce((acc: number, line: any) => acc + (line.bbox.y1 - line.bbox.y0), 0);
+          avgLineHeight = sumHeight / pageData.lines.length;
+        }
+
         const id = crypto.randomUUID();
+        // Calibrate font size: Tesseract's bbox is tight, we scale up slightly (1.2x) to match visual size of MS P Gothic
+        const calibratedSize = Math.max(12, Math.round(avgLineHeight * 1.2));
+
         const newObj: CanvasObject = {
           id,
           type: 'text',
@@ -435,14 +623,15 @@ function App() {
           y: roi.y,
           width: roi.width,
           height: roi.height,
-          content: text.trim(),
-          color: currentColor === '#FFFFFF' ? '#000000' : currentColor,
-          fontSize: (roi.height / text.split('\n').length) * 0.8 || 60,
+          content: cleanedText,
+          color: detectedColor,
+          fontSize: calibratedSize,
         };
         const updatedSlides = [...slides];
         updatedSlides[currentSlideIndex].objects.push(newObj);
         setSlides(updatedSlides);
         setSelectedObjectId(id);
+        setActiveTool('select');
         saveToHistory(updatedSlides, currentSlideIndex);
       }
     } catch (err) {
@@ -462,15 +651,17 @@ function App() {
         updatedSlides[currentSlideIndex].objects.push(currentObjectRef.current);
         setSlides(updatedSlides);
         setSelectedObjectId(currentObjectRef.current.id);
+        setActiveTool('select');
         saveToHistory(updatedSlides, currentSlideIndex);
       }
     }
-    if (isDragging.current) {
+    if (isDragging.current || activeHandle) {
       saveToHistory(slides, currentSlideIndex);
     }
     isDrawing.current = false;
     isDragging.current = false;
     currentObjectRef.current = null;
+    setActiveHandle(null);
   };
 
   const handleDoubleClick = (e: React.MouseEvent) => {
@@ -520,6 +711,7 @@ function App() {
     saveToHistory(updatedSlides, currentSlideIndex);
   }, [selectedObjectId, currentSlide, slides, currentSlideIndex, saveToHistory]);
 
+
   // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -533,6 +725,16 @@ function App() {
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
         e.preventDefault();
         redo();
+      } else if (e.key.toLowerCase() === 's') {
+        setActiveTool('select');
+      } else if (e.key.toLowerCase() === 'm') {
+        setActiveTool('mask');
+      } else if (e.key.toLowerCase() === 't') {
+        setActiveTool('text');
+      } else if (e.key.toLowerCase() === 'e') {
+        setActiveTool('eyedropper');
+      } else if (e.key.toLowerCase() === 'r') {
+        setActiveTool('scan');
       }
     };
 
@@ -656,14 +858,20 @@ function App() {
           </button>
           <div className="h-px w-8 bg-neutral-800" />
           <button
-            onClick={() => setActiveTool('mask')}
+            onClick={() => {
+              setActiveTool('mask');
+              setCurrentColor(maskColor);
+            }}
             className={`p-2.5 rounded-xl transition-all ${activeTool === 'mask' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-neutral-500 hover:bg-neutral-800 hover:text-white'}`}
             title="Mask Tool (M)"
           >
             <Square size={24} />
           </button>
           <button
-            onClick={() => setActiveTool('text')}
+            onClick={() => {
+              setActiveTool('text');
+              setCurrentColor(textColor);
+            }}
             className={`p-2.5 rounded-xl transition-all ${activeTool === 'text' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-neutral-500 hover:bg-neutral-800 hover:text-white'}`}
             title="Text Tool (T)"
           >
@@ -720,13 +928,24 @@ function App() {
               </div>
             )}
 
-            <div className="relative group">
+            <div className="relative group overflow-hidden rounded-xl border-2 border-neutral-700 shadow-inner group-hover:ring-blue-500/50 transition-all">
               <input
                 type="color"
                 value={currentColor}
                 onChange={(e) => {
-                  setCurrentColor(e.target.value);
-                  if (selectedObjectId) updateSelectedObject({ color: e.target.value });
+                  const color = e.target.value;
+                  setCurrentColor(color);
+                  if (activeTool === 'mask') setMaskColor(color);
+                  else if (activeTool === 'text') setTextColor(color);
+
+                  if (selectedObjectId) {
+                    const obj = currentSlide.objects.find(o => o.id === selectedObjectId);
+                    if (obj) {
+                      if (obj.type === 'mask') setMaskColor(color);
+                      else setTextColor(color);
+                    }
+                    updateSelectedObject({ color });
+                  }
                 }}
                 onBlur={() => {
                   if (selectedObjectId) saveToHistory(slides, currentSlideIndex);
@@ -734,7 +953,7 @@ function App() {
                 className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
               />
               <div
-                className="w-10 h-10 rounded-xl border-2 border-neutral-700 shadow-inner overflow-hidden ring-2 ring-transparent group-hover:ring-blue-500/50 transition-all"
+                className="w-10 h-10"
                 style={{ backgroundColor: currentColor }}
               />
             </div>
@@ -781,14 +1000,30 @@ function App() {
                       width: Math.max(30, (editingObject.width / currentSlide.canvas.width) * 100) + '%',
                       height: Math.max(15, (editingObject.height / currentSlide.canvas.height) * 100) + '%',
                       fontSize: (editingObject.fontSize || 100) * (canvasRef.current?.getBoundingClientRect().width || 1) / (currentSlide.canvas.width || 1) + 'px',
+                      fontFamily: '"MS PGothic", "MS Pゴシック", sans-serif',
                       color: editingObject.color,
                       textShadow: editingObject.color === '#FFFFFF' ? '0 0 4px rgba(0,0,0,0.8)' : 'none',
                     }}
                     value={editingObject.content}
                     onChange={(e) => updateSelectedObject({ content: e.target.value })}
+                    onMouseDown={(e) => {
+                      const pos = getMousePos(e);
+                      const handles = getHandles(editingObject);
+                      const isHandle = (Object.keys(handles) as (keyof typeof handles)[]).some(key => {
+                        const h = handles[key];
+                        return pos.x >= h.x - 20 && pos.x <= h.x + 20 &&
+                          pos.y >= h.y - 20 && pos.y <= h.y + 20;
+                      });
+                      if (isHandle) {
+                        handleMouseDown(e);
+                      }
+                    }}
                     onBlur={() => {
-                      setEditingTextId(null);
-                      saveToHistory(slides, currentSlideIndex);
+                      // Only blur if not currently resizing
+                      if (!activeHandle) {
+                        setEditingTextId(null);
+                        saveToHistory(slides, currentSlideIndex);
+                      }
                     }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
