@@ -164,6 +164,11 @@ function App() {
     try {
       const pres = new pptxgen();
 
+      // Standard PPTX widescreen ratio is 13.33 x 7.5 inches
+      // We use 10 x 5.625 as a base which is the same 16:9 ratio.
+      const PPTX_WIDTH = 10;
+      const PPTX_HEIGHT = 5.625;
+
       for (const slideData of slides) {
         const slide = pres.addSlide();
 
@@ -172,36 +177,45 @@ function App() {
           data: imgData,
           x: 0,
           y: 0,
-          w: '100%',
-          h: '100%'
+          w: PPTX_WIDTH,
+          h: PPTX_HEIGHT
         });
 
         const canvasWidth = slideData.canvas.width;
-        const canvasHeight = slideData.canvas.height;
 
-        const pptWidth = 10;
-        const pptHeight = 5.625;
+        // Calibration factor: Canvas pixels to Points/Inches
+        // Typical canvas is ~1600-2000px wide. PPTX is 10 inches wide.
+        // fontPointSize = pxSize * (PPTX_WIDTH / canvasWidth) * 72
+        // But pptxgenjs font size is already calibrated. We need to find the correct ratio.
+        const scaleFactor = PPTX_WIDTH / canvasWidth;
 
         slideData.objects.forEach(obj => {
-          const x = (obj.x / canvasWidth) * pptWidth;
-          const y = (obj.y / canvasHeight) * pptHeight;
-          const w = (obj.width / canvasWidth) * pptWidth;
-          const h = (obj.height / canvasHeight) * pptHeight;
+          const x = obj.x * scaleFactor;
+          const y = obj.y * scaleFactor;
+          const w = obj.width * scaleFactor;
+          const h = obj.height * scaleFactor;
 
           if (obj.type === 'mask') {
             slide.addShape(pres.ShapeType.rect, {
               x, y, w, h,
               fill: { color: obj.color.replace('#', '') },
-              line: { width: 0 }
+              line: { color: obj.color.replace('#', ''), width: 0 }
             });
           } else if (obj.type === 'text') {
+            // High-res coordinate scaling for font size
+            const fontSizePt = (obj.fontSize || 100) * scaleFactor * 72 * 0.9;
+
             slide.addText(obj.content || '', {
-              x, y, w, h: Math.max(h, 0.4),
-              fontSize: (obj.fontSize || 20) * 0.5,
+              x, y: y - (fontSizePt * 0.005), // Subtle offset for vertical alignment
+              w, h: Math.max(h, fontSizePt * 0.02),
+              fontSize: Math.round(fontSizePt),
               color: obj.color.replace('#', ''),
               bold: true,
               valign: 'top',
-              align: 'left'
+              align: 'left',
+              margin: 0,
+              line: { width: 0, color: obj.color.replace('#', ''), transparency: 100 },
+              wrap: true
             });
           }
         });
@@ -239,7 +253,7 @@ function App() {
         if (editingTextId === obj.id) return;
 
         ctx.fillStyle = obj.color;
-        const fontSize = obj.fontSize || 20;
+        const fontSize = obj.fontSize || 60;
         ctx.font = `bold ${fontSize}px sans-serif`;
         ctx.textBaseline = 'top';
 
@@ -340,11 +354,11 @@ function App() {
         type: 'text',
         x: pos.x,
         y: pos.y,
-        width: 600,
-        height: 120,
+        width: 800, // Adjusted default width
+        height: 150, // Adjusted default height
         content: '',
         color: currentColor === '#FFFFFF' ? '#000000' : currentColor,
-        fontSize: 60,
+        fontSize: 100, // High-res default font size
       };
       const updatedSlides = [...slides];
       updatedSlides[currentSlideIndex].objects.push(newObj);
@@ -423,7 +437,6 @@ function App() {
     if (obj) {
       Object.assign(obj, updates);
       setSlides(updatedSlides);
-      // History will be saved on blur/mouseup or after specific actions
     }
   };
 
@@ -453,7 +466,7 @@ function App() {
   // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (editingTextId) return; // Disable shortcuts while editing text
+      if (editingTextId) return;
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedObjectId) deleteSelected();
@@ -612,7 +625,7 @@ function App() {
               <div className="flex flex-col gap-2 bg-neutral-800 p-1.5 rounded-xl border border-neutral-700">
                 <button
                   onClick={() => {
-                    const nextSize = (selectedObject.fontSize || 20) + 4;
+                    const nextSize = (selectedObject.fontSize || 100) + 8;
                     updateSelectedObject({ fontSize: nextSize });
                     saveToHistory(slides, currentSlideIndex);
                   }}
@@ -624,7 +637,7 @@ function App() {
                 <div className="text-[10px] font-bold text-center text-neutral-500">{selectedObject.fontSize}</div>
                 <button
                   onClick={() => {
-                    const nextSize = Math.max(8, (selectedObject.fontSize || 20) - 4);
+                    const nextSize = Math.max(8, (selectedObject.fontSize || 100) - 8);
                     updateSelectedObject({ fontSize: nextSize });
                     saveToHistory(slides, currentSlideIndex);
                   }}
@@ -690,13 +703,13 @@ function App() {
                   <textarea
                     autoFocus
                     placeholder="Type here..."
-                    className="absolute z-50 p-4 bg-neutral-900/90 text-white border-4 border-blue-500 rounded-xl focus:outline-none resize-none font-bold leading-[1.2] shadow-2xl backdrop-blur-xl overflow-hidden"
+                    className="absolute z-50 p-4 bg-neutral-900/95 text-white border-4 border-blue-500 rounded-xl focus:outline-none resize-none font-bold leading-[1.2] shadow-2xl backdrop-blur-xl overflow-hidden"
                     style={{
                       left: (editingObject.x / currentSlide.canvas.width) * 100 + '%',
                       top: (editingObject.y / currentSlide.canvas.height) * 100 + '%',
                       width: Math.max(30, (editingObject.width / currentSlide.canvas.width) * 100) + '%',
                       height: Math.max(15, (editingObject.height / currentSlide.canvas.height) * 100) + '%',
-                      fontSize: (editingObject.fontSize || 20) * (canvasRef.current?.getBoundingClientRect().width || 1) / (currentSlide.canvas.width || 1) + 'px',
+                      fontSize: (editingObject.fontSize || 100) * (canvasRef.current?.getBoundingClientRect().width || 1) / (currentSlide.canvas.width || 1) + 'px',
                       color: editingObject.color,
                       textShadow: editingObject.color === '#FFFFFF' ? '0 0 4px rgba(0,0,0,0.8)' : 'none',
                     }}
