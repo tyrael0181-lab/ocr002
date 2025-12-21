@@ -124,7 +124,11 @@ function App() {
 
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2.0 });
+        // Calculate dynamic scale to prevent oversized canvasses
+        const defaultViewport = page.getViewport({ scale: 1.0 });
+        const maxDimension = 1920;
+        const scale = Math.min(2.0, maxDimension / defaultViewport.width);
+        const viewport = page.getViewport({ scale });
 
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
@@ -235,17 +239,24 @@ function App() {
     setIsExporting(true);
 
     try {
+      // Set orientation based on first slide
+      const firstSlide = targetSlides[0];
+      const orientation = firstSlide.canvas.width >= firstSlide.canvas.height ? 'landscape' : 'portrait';
       const pdf = new jsPDF({
-        orientation: 'landscape',
+        orientation,
         unit: 'px',
-        format: [slides[0].canvas.width, slides[0].canvas.height]
+        format: [firstSlide.canvas.width, firstSlide.canvas.height],
+        compress: true
       });
 
       for (let i = 0; i < targetSlides.length; i++) {
         const slideData = targetSlides[i];
-        if (i > 0) pdf.addPage([slideData.canvas.width, slideData.canvas.height], 'landscape');
+        // Add new pages with dynamic orientation
+        if (i > 0) {
+          const pageOrientation = slideData.canvas.width >= slideData.canvas.height ? 'landscape' : 'portrait';
+          pdf.addPage([slideData.canvas.width, slideData.canvas.height], pageOrientation);
+        }
 
-        // Create a temporary canvas to merge PDF and objects for high-quality export
         const tempCanvas = document.createElement('canvas');
         tempCanvas.width = slideData.canvas.width;
         tempCanvas.height = slideData.canvas.height;
@@ -253,23 +264,28 @@ function App() {
         if (ctx) {
           ctx.drawImage(slideData.canvas, 0, 0);
 
-          // Draw objects
           slideData.objects.forEach(obj => {
             if (obj.type === 'mask') {
               ctx.fillStyle = obj.color;
               ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
             } else if (obj.type === 'text') {
               ctx.fillStyle = obj.color;
-              ctx.font = `bold ${obj.fontSize || 100}px "MS PGothic", "MS Pゴシック", sans-serif`;
+              const fontSize = obj.fontSize || 100;
+              ctx.font = `bold ${fontSize}px "MS PGothic", "MS Pゴシック", sans-serif`;
               ctx.textBaseline = 'top';
-              // Vertical alignment adjustment to match PPTX/Editor
-              const textY = obj.y + (obj.fontSize || 100) * 0.1;
-              ctx.fillText(obj.content || '', obj.x, textY, obj.width);
+
+              // Improved multi-line rendering synchronized with editor
+              const lines = (obj.content || '').split('\n');
+              const lineHeight = fontSize * 1.2;
+              lines.forEach((line, index) => {
+                ctx.fillText(line, obj.x, obj.y + (index * lineHeight));
+              });
             }
           });
 
-          const imgData = tempCanvas.toDataURL('image/jpeg', 0.95);
-          pdf.addImage(imgData, 'JPEG', 0, 0, slideData.canvas.width, slideData.canvas.height);
+          // Maintain optimized quality
+          const imgData = tempCanvas.toDataURL('image/jpeg', 0.5);
+          pdf.addImage(imgData, 'JPEG', 0, 0, slideData.canvas.width, slideData.canvas.height, undefined, 'FAST');
         }
       }
 
@@ -445,10 +461,24 @@ function App() {
         const realIndex = currentSlide.objects.length - 1 - hitIndex;
         const updatedSlides = [...slides];
         const objects = updatedSlides[currentSlideIndex].objects;
-        const [obj] = objects.splice(realIndex, 1);
-        objects.push(obj);
+        let obj = objects[realIndex];
 
-        setSelectedObjectId(obj.id);
+        // Ctrl+Drag Duplication logic
+        if (e.ctrlKey) {
+          const newObj = {
+            ...obj,
+            id: crypto.randomUUID(),
+          };
+          objects.push(newObj);
+          obj = newObj;
+          setSelectedObjectId(newObj.id);
+        } else {
+          // Standard selection logic: move to front
+          objects.splice(realIndex, 1);
+          objects.push(obj);
+          setSelectedObjectId(obj.id);
+        }
+
         setCurrentColor(obj.color);
         setSlides(updatedSlides);
 

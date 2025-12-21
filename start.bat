@@ -9,8 +9,8 @@ if not exist node_modules (
     call npm install
 )
 
-echo [INFO] Starting development server...
+echo [INFO] Starting development server and opening browser...
 echo.
-call npm run dev
+call npm run dev -- --open
 
 pause
