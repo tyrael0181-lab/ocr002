@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Upload, Download, Square, Type, MousePointer2, Trash2, Pipette, Plus, Minus, BringToFront, Undo2, Redo2, ScanLine } from 'lucide-react';
+import { Upload, Square, Type, MousePointer2, Trash2, Pipette, Plus, Minus, BringToFront, Undo2, Redo2, ScanLine, HelpCircle } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import pptxgen from 'pptxgenjs';
 import { jsPDF } from 'jspdf';
@@ -832,6 +832,16 @@ function App() {
           <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-400 tracking-tight">
             Slide Patcher
           </h1>
+          <a
+            href="https://github.com/tyrael0181-lab/ocr002/blob/main/USER_GUIDE.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-blue-400 hover:text-blue-300 hover:bg-blue-400/10 rounded-full border border-blue-400/20 transition-all ml-2"
+            title="Open User Guide"
+          >
+            <HelpCircle size={14} />
+            使い方ガイド
+          </a>
         </div>
 
         <div className="flex items-center gap-3">

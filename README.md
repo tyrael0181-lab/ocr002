@@ -1,73 +1,33 @@
-# React + TypeScript + Vite
+# 🎨 Slide Patcher
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+AI（NotebookLM等）が生成したスライド画像を、まるで魔法のように「編集可能なスライド」に修正・再出力するツールです。
 
-Currently, two official plugins are available:
+## 🚀 Live Demo
+[Slide Patcher を使ってみる](https://tyrael0181-lab.github.io/ocr002/)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## 📖 使い方 (Manual)
+[初心者向け使い方ガイド](./USER_GUIDE.md)
 
-## React Compiler
+## ✨ 主な機能
+- **隠す (Mask)**: 修正テープ（白塗り）で不要な部分を消去
+- **書く (Text)**: 好きな場所に新しいテキストを配置
+- **読み取る (Magic OCR)**: スライド内の文字をAIが解析し、即座に編集可能なテキストに変換
+- **戻す (Export)**: レイヤー構造を保ったまま **PowerPoint (.pptx)** や **PDF** として書き出し
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## 🔒 セキュリティ
+全ての処理（PDF解析、OCR、ファイル生成）はユーザーのブラウザ内で行われます。データが外部サーバーに送信されることはありません。
 
-## Expanding the ESLint configuration
+## 🛠 開発者向け
+Vite + React + TypeScript で構築されています。
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### 起動
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### ビルド & デプロイ
+```bash
+npm run build
+npm run deploy
 ```
