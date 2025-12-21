@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { Upload, Download, Square, Type, MousePointer2, Trash2, Pipette, Plus, Minus, BringToFront, Undo2, Redo2, ScanLine } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import pptxgen from 'pptxgenjs';
+import { jsPDF } from 'jspdf';
 import { createWorker } from 'tesseract.js';
 
 // Configure PDF.js worker
@@ -111,8 +112,8 @@ function App() {
     }
   }, [history, historyIndex]);
 
-  const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement> | File) => {
+    const file = event instanceof File ? event : event.target.files?.[0];
     if (!file || file.type !== 'application/pdf') return;
 
     setIsProcessing(true);
@@ -163,36 +164,24 @@ function App() {
     }
   }, []);
 
-  const handleExport = async () => {
-    if (slides.length === 0) return;
+  const generatePPTX = async (targetSlides: SlideData[], filename: string) => {
+    if (targetSlides.length === 0) return;
     setIsExporting(true);
 
     try {
       const pres = new pptxgen();
-
-      // Standard PPTX widescreen ratio is 13.33 x 7.5 inches
-      // We use 10 x 5.625 as a base which is the same 16:9 ratio.
       const PPTX_WIDTH = 10;
       const PPTX_HEIGHT = 5.625;
 
-      for (const slideData of slides) {
+      for (const slideData of targetSlides) {
         const slide = pres.addSlide();
-
         const imgData = slideData.canvas.toDataURL('image/png');
         slide.addImage({
           data: imgData,
-          x: 0,
-          y: 0,
-          w: PPTX_WIDTH,
-          h: PPTX_HEIGHT
+          x: 0, y: 0, w: PPTX_WIDTH, h: PPTX_HEIGHT
         });
 
         const canvasWidth = slideData.canvas.width;
-
-        // Calibration factor: Canvas pixels to Points/Inches
-        // Typical canvas is ~1600-2000px wide. PPTX is 10 inches wide.
-        // fontPointSize = pxSize * (PPTX_WIDTH / canvasWidth) * 72
-        // But pptxgenjs font size is already calibrated. We need to find the correct ratio.
         const scaleFactor = PPTX_WIDTH / canvasWidth;
 
         slideData.objects.forEach(obj => {
@@ -208,11 +197,9 @@ function App() {
               line: { color: obj.color.replace('#', ''), width: 0 }
             });
           } else if (obj.type === 'text') {
-            // High-res coordinate scaling for font size
             const fontSizePt = (obj.fontSize || 100) * scaleFactor * 72 * 0.9;
-
             slide.addText(obj.content || '', {
-              x, y: y - (fontSizePt * 0.005), // Subtle offset for vertical alignment
+              x, y: y - (fontSizePt * 0.005),
               w, h: Math.max(h, fontSizePt * 0.02),
               fontSize: Math.round(fontSizePt),
               color: obj.color.replace('#', ''),
@@ -228,13 +215,77 @@ function App() {
         });
       }
 
-      await pres.writeFile({ fileName: `SlidePatcher_Export_${Date.now()}.pptx` });
+      await pres.writeFile({ fileName: filename });
     } catch (error) {
       console.error('Export error:', error);
       alert('Failed to export PPTX.');
     } finally {
       setIsExporting(false);
     }
+  };
+
+  const handleExportAll = () => generatePPTX(slides, `SlidePatcher_All_${Date.now()}.pptx`);
+  const handleExportCurrent = () => {
+    if (!currentSlide) return;
+    generatePPTX([currentSlide], `SlidePatcher_Slide${currentSlideIndex + 1}_${Date.now()}.pptx`);
+  };
+
+  const generatePDF = async (targetSlides: SlideData[], filename: string) => {
+    if (targetSlides.length === 0) return;
+    setIsExporting(true);
+
+    try {
+      const pdf = new jsPDF({
+        orientation: 'landscape',
+        unit: 'px',
+        format: [slides[0].canvas.width, slides[0].canvas.height]
+      });
+
+      for (let i = 0; i < targetSlides.length; i++) {
+        const slideData = targetSlides[i];
+        if (i > 0) pdf.addPage([slideData.canvas.width, slideData.canvas.height], 'landscape');
+
+        // Create a temporary canvas to merge PDF and objects for high-quality export
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = slideData.canvas.width;
+        tempCanvas.height = slideData.canvas.height;
+        const ctx = tempCanvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(slideData.canvas, 0, 0);
+
+          // Draw objects
+          slideData.objects.forEach(obj => {
+            if (obj.type === 'mask') {
+              ctx.fillStyle = obj.color;
+              ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
+            } else if (obj.type === 'text') {
+              ctx.fillStyle = obj.color;
+              ctx.font = `bold ${obj.fontSize || 100}px "MS PGothic", "MS Pゴシック", sans-serif`;
+              ctx.textBaseline = 'top';
+              // Vertical alignment adjustment to match PPTX/Editor
+              const textY = obj.y + (obj.fontSize || 100) * 0.1;
+              ctx.fillText(obj.content || '', obj.x, textY, obj.width);
+            }
+          });
+
+          const imgData = tempCanvas.toDataURL('image/jpeg', 0.95);
+          pdf.addImage(imgData, 'JPEG', 0, 0, slideData.canvas.width, slideData.canvas.height);
+        }
+      }
+
+      pdf.save(filename);
+    } catch (error) {
+      console.error('PDF Export error:', error);
+      alert('Failed to export PDF.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportPDFAll = () => generatePDF(slides, `SlidePatcher_All_${Date.now()}.pdf`);
+  const handleExportPDFCurrent = () => {
+    if (!currentSlide) return;
+    generatePDF([currentSlide], `SlidePatcher_Slide${currentSlideIndex + 1}_${Date.now()}.pdf`);
   };
 
   const currentSlide = slides[currentSlideIndex];
@@ -792,33 +843,62 @@ function App() {
               </button>
             </div>
           )}
-          <button
-            onClick={handleExport}
-            disabled={slides.length === 0 || isExporting}
-            className="flex items-center gap-2 px-5 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg font-semibold hover:shadow-lg hover:shadow-blue-900/20 disabled:from-neutral-800 disabled:to-neutral-800 disabled:text-neutral-500 disabled:cursor-not-allowed transition-all shadow-md active:scale-95"
-          >
-            {isExporting ? (
-              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-            ) : (
-              <Download size={18} />
-            )}
-            {isExporting ? 'Exporting...' : 'Export PPTX'}
-          </button>
+          <div className="flex gap-4">
+            {/* PowerPoint Group */}
+            <div className="flex bg-neutral-900 p-1.5 rounded-xl border border-neutral-800 shadow-inner gap-1">
+              <button
+                onClick={handleExportCurrent}
+                disabled={slides.length === 0 || isExporting}
+                className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-neutral-400 font-bold hover:text-white hover:bg-neutral-800 rounded-lg transition-all active:scale-90"
+              >
+                PPT Current
+              </button>
+              <button
+                onClick={handleExportAll}
+                disabled={slides.length === 0 || isExporting}
+                className="flex items-center gap-2 px-4 py-1.5 bg-gradient-to-r from-[#D24726] to-[#A2361E] text-white text-[11px] font-extrabold rounded-lg shadow-md transition-all hover:scale-105 hover:shadow-[#D24726]/30 hover:shadow-lg active:scale-95"
+              >
+                PPT All
+              </button>
+            </div>
+
+            {/* PDF Group */}
+            <div className="flex bg-neutral-900 p-1.5 rounded-xl border border-neutral-800 shadow-inner gap-1">
+              <button
+                onClick={handleExportPDFCurrent}
+                disabled={slides.length === 0 || isExporting}
+                className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-neutral-400 font-bold hover:text-white hover:bg-neutral-800 rounded-lg transition-all active:scale-90"
+              >
+                PDF Current
+              </button>
+              <button
+                onClick={handleExportPDFAll}
+                disabled={slides.length === 0 || isExporting}
+                className="flex items-center gap-2 px-4 py-1.5 bg-gradient-to-r from-[#E41E10] to-[#B30B00] text-white text-[11px] font-extrabold rounded-lg shadow-md transition-all hover:scale-105 hover:shadow-[#E41E10]/30 hover:shadow-lg active:scale-95"
+              >
+                {isExporting ? (
+                  <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                ) : (
+                  'PDF All'
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 
       {/* Main Content */}
       <main className="flex-1 flex overflow-hidden relative">
         {/* Sidebar */}
-        <aside className="w-64 border-r border-neutral-800 bg-neutral-950 flex flex-col shrink-0">
-          <div className="p-4 border-b border-neutral-800 flex items-center justify-between">
-            <h2 className="text-xs font-bold text-neutral-500 uppercase tracking-widest">Slides</h2>
-            <span className="text-xs font-bold text-blue-400 bg-blue-950 px-2 py-0.5 rounded-full">{slides.length}</span>
+        <aside className="w-64 border-r border-neutral-300 bg-[#F3F2F1] flex flex-col shrink-0">
+          <div className="p-3 border-b border-neutral-200 flex items-center justify-between bg-white/50">
+            <h2 className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Slides</h2>
+            <span className="text-[10px] font-bold text-neutral-500 bg-neutral-200 px-2 py-0.5 rounded-full">{slides.length}</span>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-3 bg-neutral-950">
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-3 scrollbar-thin scrollbar-thumb-neutral-300 scrollbar-track-transparent">
             {slides.length === 0 ? (
-              <div className="aspect-video bg-neutral-900 rounded-xl border-2 border-dashed border-neutral-800 flex items-center justify-center text-neutral-600 text-xs italic p-4 text-center text-pretty">
-                Upload a PDF to start
+              <div className="aspect-video bg-white/50 rounded border-2 border-dashed border-neutral-200 flex items-center justify-center text-neutral-400 text-xs italic p-4 text-center">
+                Upload PDF
               </div>
             ) : (
               slides.map((slide, index) => (
@@ -829,18 +909,20 @@ function App() {
                     setSelectedObjectId(null);
                     setEditingTextId(null);
                   }}
-                  className={`relative group cursor-pointer rounded-lg overflow-hidden border-2 transition-all shadow-sm ${currentSlideIndex === index ? 'border-blue-500 ring-4 ring-blue-500/20 scale-[0.98]' : 'border-transparent hover:border-neutral-800'
-                    }`}
+                  className="flex items-start gap-2 group cursor-pointer"
                 >
-                  <img src={slide.thumbnail} alt={`Slide ${index + 1}`} className="w-full aspect-video object-cover bg-black" />
-                  <div className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] font-bold px-2 py-0.5 rounded backdrop-blur-md border border-white/10">
+                  <span className={`w-5 text-[11px] mt-2 font-medium text-right transition-colors ${currentSlideIndex === index ? 'text-[#C43E1C]' : 'text-neutral-400 group-hover:text-neutral-600'}`}>
                     {index + 1}
+                  </span>
+                  <div className={`relative flex-1 aspect-video bg-white border-2 transition-all shadow-sm ${currentSlideIndex === index ? 'border-[#C43E1C] shadow-md ring-2 ring-[#C43E1C]/10' : 'border-neutral-200 group-hover:border-neutral-300'
+                    }`}>
+                    <img src={slide.thumbnail} alt={`Slide ${index + 1}`} className="w-full h-full object-contain" />
+                    {slide.objects.length > 0 && (
+                      <div className="absolute top-0 left-0 bg-[#C43E1C] text-white text-[9px] font-bold px-1.5 py-0.5 rounded-br shadow-sm z-10">
+                        {slide.objects.length}
+                      </div>
+                    )}
                   </div>
-                  {slide.objects.length > 0 && (
-                    <div className="absolute top-1 left-1 bg-blue-600 text-white text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full shadow-md">
-                      {slide.objects.length}
-                    </div>
-                  )}
                 </div>
               ))
             )}
@@ -961,7 +1043,7 @@ function App() {
         </aside>
 
         {/* Editor Area */}
-        <section className="flex-1 bg-neutral-900 relative overflow-hidden flex flex-col">
+        <section className="flex-1 bg-[#E6E6E6] relative overflow-hidden flex flex-col">
           <div className="flex-1 overflow-auto flex items-start justify-center p-12">
             {isProcessing ? (
               <div className="m-auto flex flex-col items-center gap-4 bg-neutral-800 p-10 rounded-[2rem] shadow-2xl border border-neutral-700">
@@ -1043,6 +1125,12 @@ function App() {
             ) : (
               <div
                 onClick={() => fileInputRef.current?.click()}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) handleFileUpload(file);
+                }}
                 className="m-auto max-w-2xl w-full aspect-[16/10] bg-neutral-950 shadow-2xl rounded-[3rem] border-2 border-dashed border-neutral-800 flex flex-col items-center justify-center gap-8 text-neutral-600 hover:border-blue-500/50 hover:bg-blue-500/[0.02] transition-all duration-700 cursor-pointer group px-12"
               >
                 <div className="w-24 h-24 bg-neutral-900 border border-neutral-800 text-neutral-700 group-hover:bg-blue-950 group-hover:text-blue-400 group-hover:border-blue-900 rounded-[2.5rem] flex items-center justify-center transition-all duration-700 shadow-inner group-hover:rotate-6 group-hover:scale-110">
