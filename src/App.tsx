@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Upload, Square, Type, MousePointer2, Trash2, Pipette, Plus, Minus, BringToFront, Undo2, Redo2, ScanLine, HelpCircle } from 'lucide-react';
+import { Upload, Square, Type, MousePointer2, Trash2, Pipette, Plus, Minus, BringToFront, Undo2, Redo2, ScanLine, HelpCircle, Hand } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import pptxgen from 'pptxgenjs';
 import { jsPDF } from 'jspdf';
@@ -8,7 +8,7 @@ import { createWorker } from 'tesseract.js';
 // Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-type Tool = 'select' | 'mask' | 'text' | 'eyedropper' | 'scan';
+type Tool = 'select' | 'mask' | 'text' | 'eyedropper' | 'scan' | 'pan';
 type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | null;
 
 interface CanvasObject {
@@ -24,14 +24,14 @@ interface CanvasObject {
 }
 
 interface SlideData {
-  id: number;
+  id: string;
   canvas: HTMLCanvasElement;
   thumbnail: string;
   objects: CanvasObject[];
 }
 
 interface HistoryState {
-  slides: { id: number; objects: CanvasObject[] }[];
+  slides: { id: string; objects: CanvasObject[] }[];
   currentSlideIndex: number;
 }
 
@@ -48,16 +48,30 @@ function App() {
   const [maskColor, setMaskColor] = useState('#FFFFFF');
   const [textColor, setTextColor] = useState('#000000');
   const [isScanning, setIsScanning] = useState(false);
+  const [zoom, setZoom] = useState<number | null>(null);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [isPanningMode, setIsPanningMode] = useState(false);
+  const [tempFontSize, setTempFontSize] = useState<string>('');
 
   // History management
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const isInternalStateUpdate = useRef(false);
 
+  // Helper for generating UUIDs with fallback
+  const generateUUID = useCallback(() => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
+  }, []);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const isDrawing = useRef(false);
   const isDragging = useRef(false);
+  const isPanning = useRef(false);
+  const panStart = useRef({ x: 0, y: 0, offX: 0, offY: 0 });
   const startPos = useRef({ x: 0, y: 0 });
   const dragOffset = useRef({ x: 0, y: 0 });
   const currentObjectRef = useRef<CanvasObject | null>(null);
@@ -114,59 +128,129 @@ function App() {
 
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement> | File) => {
     const file = event instanceof File ? event : event.target.files?.[0];
-    if (!file || file.type !== 'application/pdf') return;
+    if (!file) return;
 
     setIsProcessing(true);
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
       const loadedSlides: SlideData[] = [];
 
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        // Calculate dynamic scale to prevent oversized canvasses
-        const defaultViewport = page.getViewport({ scale: 1.0 });
+      if (file.type === 'application/pdf') {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const defaultViewport = page.getViewport({ scale: 1.0 });
+          const maxDimension = 1920;
+          const scale = Math.min(2.0, maxDimension / defaultViewport.width);
+          const viewport = page.getViewport({ scale });
+
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          if (!context) continue;
+
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          await page.render({ canvasContext: context, viewport, canvas } as any).promise;
+
+          const thumbScale = 0.2;
+          const thumbViewport = page.getViewport({ scale: thumbScale });
+          const thumbCanvas = document.createElement('canvas');
+          const thumbContext = thumbCanvas.getContext('2d');
+          if (thumbContext) {
+            thumbCanvas.height = thumbViewport.height;
+            thumbCanvas.width = thumbViewport.width;
+            await page.render({ canvasContext: thumbContext, viewport: thumbViewport, canvas: thumbCanvas } as any).promise;
+          }
+
+          loadedSlides.push({
+            id: generateUUID(),
+            canvas: canvas,
+            thumbnail: thumbCanvas.toDataURL(),
+            objects: [],
+          });
+        }
+      } else if (file.type.startsWith('image/')) {
+        const img = new Image();
+        const reader = new FileReader();
+
+        const imgLoaded = new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve();
+          img.onerror = () => reject(new Error('Failed to decode image. The file might be corrupted or in an unsupported format.'));
+        });
+
+        reader.onload = (e) => {
+          img.src = e.target?.result as string;
+        };
+        reader.readAsDataURL(file);
+
+        await imgLoaded;
+
+        // Apply resolution capping (1920px)
         const maxDimension = 1920;
-        const scale = Math.min(2.0, maxDimension / defaultViewport.width);
-        const viewport = page.getViewport({ scale });
+        const scale = Math.min(1.0, maxDimension / img.width);
 
         const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        if (!context) continue;
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        }
 
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-        await page.render({ canvasContext: context, viewport, canvas } as any).promise;
-
-        const thumbScale = 0.2;
-        const thumbViewport = page.getViewport({ scale: thumbScale });
+        // Generate thumbnail
         const thumbCanvas = document.createElement('canvas');
-        const thumbContext = thumbCanvas.getContext('2d');
-        if (thumbContext) {
-          thumbCanvas.height = thumbViewport.height;
-          thumbCanvas.width = thumbViewport.width;
-          await page.render({ canvasContext: thumbContext, viewport: thumbViewport, canvas: thumbCanvas } as any).promise;
+        const thumbScale = 0.2;
+        thumbCanvas.width = canvas.width * thumbScale;
+        thumbCanvas.height = canvas.height * thumbScale;
+        const thumbCtx = thumbCanvas.width > 0 ? thumbCanvas.getContext('2d') : null;
+        if (thumbCtx) {
+          thumbCtx.drawImage(canvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
         }
 
         loadedSlides.push({
-          id: i,
+          id: generateUUID(),
           canvas: canvas,
           thumbnail: thumbCanvas.toDataURL(),
           objects: [],
         });
       }
 
-      setSlides(loadedSlides);
-      setCurrentSlideIndex(0);
-      setHistory([{ slides: loadedSlides.map(s => ({ id: s.id, objects: [] })), currentSlideIndex: 0 }]);
-      setHistoryIndex(0);
+      if (loadedSlides.length > 0) {
+        setSlides(prev => [...prev, ...loadedSlides]);
+
+        // Safer history update outside of setSlides
+        const newTotalSlides = [...slides, ...loadedSlides];
+        const newState: HistoryState = {
+          slides: newTotalSlides.map(s => ({
+            id: s.id,
+            objects: JSON.parse(JSON.stringify(s.objects || []))
+          })),
+          currentSlideIndex: slides.length === 0 ? 0 : currentSlideIndex
+        };
+
+        setHistory(hPrev => {
+          const newHistory = [...hPrev.slice(0, historyIndex + 1), newState];
+          return newHistory.length > 50 ? newHistory.slice(1) : newHistory;
+        });
+        setHistoryIndex(prevIdx => Math.min(prevIdx + 1, 49));
+
+        if (slides.length === 0) {
+          setCurrentSlideIndex(0);
+        }
+      }
     } catch (error) {
-      console.error('Error loading PDF:', error);
-      alert('Failed to load PDF. Please try another file.');
+      console.error('Error loading file:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      alert(`Failed to load file: ${errorMessage}`);
     } finally {
       setIsProcessing(false);
+      // Reset input value to allow re-uploading the same file
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
-  }, []);
+  }, [slides, currentSlideIndex, historyIndex, generateUUID]);
 
   const generatePPTX = async (targetSlides: SlideData[], filename: string) => {
     if (targetSlides.length === 0) return;
@@ -393,6 +477,13 @@ function App() {
     }
   }, [currentSlide, selectedObjectId, editingTextId, slides, activeTool]);
 
+  // Sync tempFontSize when selection changes
+  useEffect(() => {
+    if (selectedObject && selectedObject.type === 'text' && selectedObject.fontSize) {
+      setTempFontSize(String(selectedObject.fontSize));
+    }
+  }, [selectedObjectId, selectedObject?.fontSize]);
+
   const getMousePos = (e: React.MouseEvent | MouseEvent) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -407,6 +498,13 @@ function App() {
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (!currentSlide) return;
+
+    if (isPanningMode || activeTool === 'pan' || e.button === 1) {
+      isPanning.current = true;
+      panStart.current = { x: e.clientX, y: e.clientY, offX: offset.x, offY: offset.y };
+      return;
+    }
+
     const pos = getMousePos(e);
 
     if (activeTool === 'eyedropper') {
@@ -540,6 +638,16 @@ function App() {
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
+    if (isPanning.current) {
+      const dx = e.clientX - panStart.current.x;
+      const dy = e.clientY - panStart.current.y;
+      setOffset({
+        x: panStart.current.offX + dx,
+        y: panStart.current.offY + dy
+      });
+      return;
+    }
+
     const pos = getMousePos(e);
 
     if (activeHandle && selectedObjectId) {
@@ -693,7 +801,7 @@ function App() {
           avgLineHeight = sumHeight / pageData.lines.length;
         }
 
-        const id = crypto.randomUUID();
+        const id = generateUUID();
         // Calibrate font size: Tesseract's bbox is tight, we scale up slightly (1.2x) to match visual size of MS P Gothic
         const calibratedSize = Math.max(12, Math.round(avgLineHeight * 1.2));
 
@@ -724,6 +832,11 @@ function App() {
   };
 
   const handleMouseUp = () => {
+    if (isPanning.current) {
+      isPanning.current = false;
+      return;
+    }
+
     if (isDrawing.current && currentObjectRef.current) {
       if (activeTool === 'scan') {
         performOCR(currentObjectRef.current);
@@ -796,7 +909,11 @@ function App() {
   // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (editingTextId) return;
+      if (
+        editingTextId ||
+        document.activeElement?.tagName === 'INPUT' ||
+        document.activeElement?.tagName === 'TEXTAREA'
+      ) return;
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedObjectId) deleteSelected();
@@ -816,12 +933,38 @@ function App() {
         setActiveTool('eyedropper');
       } else if (e.key.toLowerCase() === 'r') {
         setActiveTool('scan');
+      } else if (e.key.toLowerCase() === 'h') {
+        setActiveTool('pan');
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        setZoom(prev => Math.min(5, (prev || 1.0) + 0.1));
+      } else if ((e.ctrlKey || e.metaKey) && e.key === '-') {
+        e.preventDefault();
+        setZoom(prev => Math.max(0.1, (prev || 1.0) - 0.1));
+      } else if ((e.ctrlKey || e.metaKey) && e.key === '0') {
+        e.preventDefault();
+        setZoom(1.0);
+      } else if (e.key === ' ') {
+        if (!isPanningMode) {
+          e.preventDefault();
+          setIsPanningMode(true);
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === ' ') {
+        setIsPanningMode(false);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedObjectId, editingTextId, deleteSelected, undo, redo]);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [selectedObjectId, editingTextId, deleteSelected, undo, redo, isPanningMode]);
 
   return (
     <div className="h-screen bg-neutral-900 flex flex-col font-sans text-neutral-100 overflow-hidden">
@@ -932,13 +1075,22 @@ function App() {
         {/* Sidebar */}
         <aside className="w-64 border-r border-neutral-300 bg-[#F3F2F1] flex flex-col shrink-0">
           <div className="p-3 border-b border-neutral-200 flex items-center justify-between bg-white/50">
-            <h2 className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Slides</h2>
-            <span className="text-[10px] font-bold text-neutral-500 bg-neutral-200 px-2 py-0.5 rounded-full">{slides.length}</span>
+            <div className="flex items-center gap-2">
+              <h2 className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Slides</h2>
+              <span className="text-[10px] font-bold text-neutral-500 bg-neutral-200 px-2 py-0.5 rounded-full">{slides.length}</span>
+            </div>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="p-1 text-neutral-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
+              title="Add more PDF or Images"
+            >
+              <Plus size={16} />
+            </button>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-3 scrollbar-thin scrollbar-thumb-neutral-300 scrollbar-track-transparent">
             {slides.length === 0 ? (
               <div className="aspect-video bg-white/50 rounded border-2 border-dashed border-neutral-200 flex items-center justify-center text-neutral-400 text-xs italic p-4 text-center">
-                Upload PDF
+                Upload PDF/Img
               </div>
             ) : (
               slides.map((slide, index) => (
@@ -977,6 +1129,13 @@ function App() {
             title="Selection Tool (S)"
           >
             <MousePointer2 size={24} />
+          </button>
+          <button
+            onClick={() => setActiveTool('pan')}
+            className={`p-2.5 rounded-xl transition-all ${activeTool === 'pan' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-neutral-500 hover:bg-neutral-800 hover:text-white'}`}
+            title="Pan Tool (H)"
+          >
+            <Hand size={24} />
           </button>
           <div className="h-px w-8 bg-neutral-800" />
           <button
@@ -1026,7 +1185,9 @@ function App() {
               <div className="flex flex-col gap-2 bg-neutral-800 p-1.5 rounded-xl border border-neutral-700">
                 <button
                   onClick={() => {
-                    const nextSize = (selectedObject.fontSize || 100) + 8;
+                    const current = parseInt(tempFontSize) || selectedObject.fontSize || 100;
+                    const nextSize = current + 1;
+                    setTempFontSize(String(nextSize));
                     updateSelectedObject({ fontSize: nextSize });
                     saveToHistory(slides, currentSlideIndex);
                   }}
@@ -1035,10 +1196,50 @@ function App() {
                 >
                   <Plus size={16} />
                 </button>
-                <div className="text-[10px] font-bold text-center text-neutral-500">{selectedObject.fontSize}</div>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={tempFontSize}
+                  onFocus={() => {
+                    if (selectedObject?.fontSize) {
+                      setTempFontSize(String(selectedObject.fontSize));
+                    }
+                  }}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setTempFontSize(val);
+                    if (val !== '') {
+                      const nextSize = parseInt(val);
+                      if (!isNaN(nextSize) && nextSize > 0) {
+                        updateSelectedObject({ fontSize: nextSize });
+                      }
+                    }
+                  }}
+                  onBlur={() => {
+                    const nextSize = parseInt(tempFontSize);
+                    if (isNaN(nextSize) || nextSize <= 0) {
+                      const fallback = selectedObject?.fontSize || 100;
+                      setTempFontSize(String(fallback));
+                      updateSelectedObject({ fontSize: fallback });
+                    }
+                    saveToHistory(slides, currentSlideIndex);
+                  }}
+                  onWheel={(e) => {
+                    const delta = e.deltaY > 0 ? -1 : 1;
+                    const current = parseInt(tempFontSize) || selectedObject?.fontSize || 100;
+                    const nextSize = Math.max(1, current + delta);
+                    setTempFontSize(String(nextSize));
+                    updateSelectedObject({ fontSize: nextSize });
+                  }}
+                  className="w-12 bg-neutral-900 border border-neutral-700 rounded py-0.5 text-[10px] font-bold text-center text-white focus:outline-none focus:border-blue-500 transition-colors cursor-text"
+                  title="Font Size (Type or scroll)"
+                />
                 <button
                   onClick={() => {
-                    const nextSize = Math.max(8, (selectedObject.fontSize || 100) - 8);
+                    const current = parseInt(tempFontSize) || selectedObject.fontSize || 100;
+                    const nextSize = Math.max(1, current - 1);
+                    setTempFontSize(String(nextSize));
                     updateSelectedObject({ fontSize: nextSize });
                     saveToHistory(slides, currentSlideIndex);
                   }}
@@ -1095,8 +1296,12 @@ function App() {
               </div>
             ) : slides.length > 0 ? (
               <div
-                className={`relative shadow-[0_0_100px_rgba(0,0,0,0.5)] bg-black leading-[0] ring-1 ring-white/10 ${activeTool !== 'select' ? 'cursor-crosshair' : 'cursor-default'} ${isDragging.current ? 'cursor-grabbing' : ''}`}
-                style={{ maxWidth: 'min-content' }}
+                className={`relative shadow-[0_0_100px_rgba(0,0,0,0.5)] bg-black leading-[0] ring-1 ring-white/10 ${isPanningMode || activeTool === 'pan' ? (isPanning.current ? 'cursor-grabbing' : 'cursor-grab') : (activeTool !== 'select' ? 'cursor-crosshair' : 'cursor-default')} ${isDragging.current ? 'cursor-grabbing' : ''}`}
+                style={{
+                  maxWidth: 'min-content',
+                  transform: `translate(${offset.x}px, ${offset.y}px)`,
+                  transition: isPanning.current ? 'none' : 'transform 0.1s ease-out'
+                }}
               >
                 <canvas
                   ref={canvasRef}
@@ -1107,8 +1312,13 @@ function App() {
                   onMouseUp={handleMouseUp}
                   onMouseLeave={handleMouseUp}
                   onDoubleClick={handleDoubleClick}
-                  className="max-w-[calc(100vw-22rem)] max-h-[calc(100vh-10rem)] w-auto h-auto block object-contain shadow-2xl"
+                  className={`block object-contain shadow-2xl transition-shadow ${zoom === null ? 'max-w-[calc(100vw-22rem)] max-h-[calc(100vh-10rem)] w-auto h-auto' : ''}`}
+                  style={zoom !== null ? {
+                    width: `${currentSlide.canvas.width * zoom}px`,
+                    height: `${currentSlide.canvas.height * zoom}px`
+                  } : undefined}
                 />
+
 
                 {/* Inline Text Editor Overlay */}
                 {editingObject && (
@@ -1156,11 +1366,6 @@ function App() {
                   />
                 )}
 
-                <div className="absolute -bottom-8 left-0 right-0 flex justify-center">
-                  <div className="bg-black/60 backdrop-blur-md px-4 py-1 rounded-full text-[10px] font-bold text-neutral-400 border border-white/5">
-                    {currentSlideIndex + 1} / {slides.length} • {currentSlide?.canvas.width}x{currentSlide?.canvas.height}px
-                  </div>
-                </div>
               </div>
             ) : (
               <div
@@ -1177,22 +1382,71 @@ function App() {
                   <Upload size={48} strokeWidth={1} />
                 </div>
                 <div className="text-center">
-                  <h3 className="text-2xl font-bold text-neutral-100 mb-2">Drop your PDF here</h3>
+                  <h3 className="text-2xl font-bold text-neutral-100 mb-2">Drop PDF or Images here</h3>
                   <p className="text-base text-neutral-500 px-8 italic text-pretty">Supports shortcuts (Ctrl+Z/Y) and PPTX export.</p>
                 </div>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  className="hidden"
-                  accept="application/pdf"
-                  onChange={handleFileUpload}
-                />
               </div>
             )}
           </div>
+
+          {/* Fixed Bottom Controls Overlay */}
+          {slides.length > 0 && !isProcessing && (
+            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3 z-[100] pointer-events-none">
+              <div className="flex items-center gap-2 bg-neutral-900/90 backdrop-blur-xl border border-neutral-700 p-1.5 rounded-2xl shadow-2xl pointer-events-auto">
+                <button
+                  onClick={() => setZoom(prev => Math.max(0.1, (prev || 1.0) - 0.1))}
+                  className="p-2 hover:bg-neutral-800 rounded-xl text-neutral-400 hover:text-white transition-colors"
+                  title="Zoom Out (Ctrl+-)"
+                >
+                  <Minus size={18} />
+                </button>
+
+                <div className="flex items-center gap-1 px-2 border-x border-neutral-800">
+                  <button
+                    onClick={() => setZoom(1.0)}
+                    className="px-2 py-1 text-[11px] font-bold text-neutral-400 hover:text-white hover:bg-neutral-800 rounded-lg transition-all"
+                  >
+                    {zoom === null ? 'Fit' : `${Math.round(zoom * 100)}%`}
+                  </button>
+                  {zoom !== null && (
+                    <button
+                      onClick={() => {
+                        setZoom(null);
+                        setOffset({ x: 0, y: 0 });
+                      }}
+                      className="px-2 py-1 text-[11px] font-bold text-blue-500 hover:bg-blue-500/10 rounded-lg transition-all"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  onClick={() => setZoom(prev => Math.min(5, (prev || 1.0) + 0.1))}
+                  className="p-2 hover:bg-neutral-800 rounded-xl text-neutral-400 hover:text-white transition-colors"
+                  title="Zoom In (Ctrl++)"
+                >
+                  <Plus size={18} />
+                </button>
+              </div>
+
+              <div className="bg-black/60 backdrop-blur-md px-4 py-1 rounded-full text-[10px] font-bold text-neutral-400 border border-white/5 shadow-lg">
+                {currentSlideIndex + 1} / {slides.length} • {currentSlide?.canvas.width}x{currentSlide?.canvas.height}px
+                {zoom !== null && ` • Offset: ${Math.round(offset.x)}, ${Math.round(offset.y)}`}
+              </div>
+            </div>
+          )}
         </section>
       </main>
-    </div>
+      {/* Hidden File Input */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        className="hidden"
+        accept="application/pdf,image/*"
+        onChange={handleFileUpload}
+      />
+    </div >
   )
 }
 
