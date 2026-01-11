@@ -388,6 +388,32 @@ function App() {
     generatePDF([currentSlide], `SlidePatcher_Slide${currentSlideIndex + 1}_${Date.now()}.pdf`);
   };
 
+  const handleExportPNGCurrent = () => {
+    if (!currentSlide) return;
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = currentSlide.canvas.width;
+    tempCanvas.height = currentSlide.canvas.height;
+    renderSlideToCanvas(currentSlide, tempCanvas);
+    const link = document.createElement('a');
+    link.download = `SlidePatcher_Slide${currentSlideIndex + 1}_${Date.now()}.png`;
+    link.href = tempCanvas.toDataURL('image/png');
+    link.click();
+  };
+
+  const handleExportPNGAll = () => {
+    if (slides.length === 0) return;
+    slides.forEach((slide, index) => {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = slide.canvas.width;
+      tempCanvas.height = slide.canvas.height;
+      renderSlideToCanvas(slide, tempCanvas);
+      const link = document.createElement('a');
+      link.download = `SlidePatcher_Slide${index + 1}_${Date.now()}.png`;
+      link.href = tempCanvas.toDataURL('image/png');
+      setTimeout(() => link.click(), index * 500);
+    });
+  };
+
   const currentSlide = slides[currentSlideIndex];
   const selectedObject = currentSlide?.objects.find(obj => obj.id === selectedObjectId);
   const editingObject = currentSlide?.objects.find(obj => obj.id === editingTextId);
@@ -405,23 +431,23 @@ function App() {
     };
   };
 
-  // Render Canvas
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !currentSlide) return;
-
+  const renderSlideToCanvas = useCallback((slide: SlideData, canvas: HTMLCanvasElement, options: {
+    showSelection?: boolean,
+    editingTextId?: string | null,
+    drawPreview?: { type: 'mask' | 'text', obj: CanvasObject, activeTool: Tool }
+  } = {}) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(currentSlide.canvas, 0, 0);
+    ctx.drawImage(slide.canvas, 0, 0);
 
-    currentSlide.objects.forEach((obj) => {
+    slide.objects.forEach((obj) => {
       if (obj.type === 'mask') {
         ctx.fillStyle = obj.color;
         ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
       } else if (obj.type === 'text') {
-        if (editingTextId === obj.id) return;
+        if (options.editingTextId === obj.id) return;
 
         ctx.fillStyle = obj.color;
         const fontSize = obj.fontSize || 60;
@@ -434,12 +460,11 @@ function App() {
         });
       }
 
-      if (selectedObjectId === obj.id) {
+      if (options.showSelection && selectedObjectId === obj.id) {
         ctx.strokeStyle = '#3b82f6';
         ctx.lineWidth = 4;
         ctx.strokeRect(obj.x - 2, obj.y - 2, obj.width + 4, obj.height + 4);
 
-        // Draw handles
         const handleSize = 12;
         ctx.fillStyle = '#ffffff';
         ctx.strokeStyle = '#3b82f6';
@@ -454,16 +479,16 @@ function App() {
       }
     });
 
-    if (isDrawing.current && currentObjectRef.current) {
-      const obj = currentObjectRef.current;
-      if (obj.type === 'mask') {
+    if (options.drawPreview) {
+      const { type, obj, activeTool } = options.drawPreview;
+      if (type === 'mask') {
         ctx.fillStyle = obj.color;
         ctx.globalAlpha = 0.5;
         ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
         ctx.globalAlpha = 1.0;
         ctx.strokeStyle = '#3b82f6';
         ctx.strokeRect(obj.x, obj.y, obj.width, obj.height);
-      } else if (obj.type === 'text' && activeTool === 'scan') { // Scan ROI preview
+      } else if (type === 'text' && activeTool === 'scan') { // Scan ROI preview
         ctx.fillStyle = '#3b82f6';
         ctx.globalAlpha = 0.2;
         ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
@@ -475,7 +500,23 @@ function App() {
         ctx.setLineDash([]);
       }
     }
-  }, [currentSlide, selectedObjectId, editingTextId, slides, activeTool]);
+  }, [selectedObjectId, getHandles]);
+
+  // Render Canvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !currentSlide) return;
+
+    renderSlideToCanvas(currentSlide, canvas, {
+      showSelection: true,
+      editingTextId: editingTextId,
+      drawPreview: isDrawing.current && currentObjectRef.current ? {
+        type: currentObjectRef.current.type,
+        obj: currentObjectRef.current,
+        activeTool: activeTool
+      } : undefined
+    });
+  }, [currentSlide, selectedObjectId, editingTextId, slides, activeTool, renderSlideToCanvas]);
 
   // Sync tempFontSize when selection changes
   useEffect(() => {
@@ -1064,6 +1105,24 @@ function App() {
                 ) : (
                   'PDF All'
                 )}
+              </button>
+            </div>
+
+            {/* PNG Group */}
+            <div className="flex bg-neutral-900 p-1.5 rounded-xl border border-neutral-800 shadow-inner gap-1">
+              <button
+                onClick={handleExportPNGCurrent}
+                disabled={slides.length === 0}
+                className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-neutral-400 font-bold hover:text-white hover:bg-neutral-800 rounded-lg transition-all active:scale-90"
+              >
+                PNG Current
+              </button>
+              <button
+                onClick={handleExportPNGAll}
+                disabled={slides.length === 0}
+                className="flex items-center gap-2 px-4 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-[11px] font-extrabold rounded-lg shadow-md transition-all hover:scale-105 hover:shadow-blue-500/30 hover:shadow-lg active:scale-95"
+              >
+                PNG All
               </button>
             </div>
           </div>
